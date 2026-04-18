@@ -4,5 +4,4 @@ export interface Tablero {
   matriz: Casilla[][];
   totalFilas: number;
   totalColumnas: number;
-  totalMinas: number;
 }

@@ -2,408 +2,239 @@ import { Request, Response } from 'express';
 import { TableroModelo } from '../modelos/tablero.modelo';
 import { estadoJuegoServicio } from '../servicios/estado-juego.servicio';
 import { IABuscaminasServicio } from '../servicios/ia-buscaminas.servicio';
-import { TableroUtilidad } from '../utilidades/tablero.utilidad';
-import { historialJugadasServicio } from '../servicios/historial-jugadas.servicio';
 
+/**
+ * IAControlador
+ *
+ * Maneja las peticiones HTTP del juego Buscaminas.
+ *
+ * Flujo de juego:
+ *  1. POST /api/tablero    → crea el tablero Y devuelve la primera jugada de la IA automáticamente.
+ *  2. POST /api/resultado  → el usuario informa cuántas minas hay alrededor → la IA devuelve la siguiente jugada.
+ *  3. POST /api/mina       → el usuario informa que era una mina → juego perdido.
+ *  4. POST /api/reiniciar  → reinicia todo para una nueva partida (la IA empieza de cero).
+ *  GET  /api/tablero       → consulta el estado actual del tablero en cualquier momento.
+ *
+ * La IA NO aprende entre partidas. Cada reinicio es un inicio limpio.
+ * La instancia de IABuscaminasServicio se recrea al reiniciar para garantizar estado cero.
+ */
 export class IAControlador {
   private tableroModelo = new TableroModelo();
   private iaBuscaminasServicio = new IABuscaminasServicio();
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // 1. CREAR TABLERO + PRIMERA JUGADA AUTOMÁTICA DE LA IA
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * POST /api/tablero
+   * Crea un tablero 10x10 vacío y automáticamente calcula y devuelve
+   * la primera casilla que la IA recomienda levantar.
+   * No requiere body — el usuario no elige nada al inicio.
+   */
   public crearTablero = (req: Request, res: Response): void => {
     try {
-      const { totalMinas } = req.body;
-
-      if (typeof totalMinas !== 'number' || totalMinas <= 0) {
-        res.status(400).json({
-          mensaje: 'Debes enviar un totalMinas válido'
-        });
-        return;
-      }
-
-      const tablero = this.tableroModelo.crearTableroVacio(totalMinas);
+      // Crear tablero vacío sin minas predefinidas
+      const tablero = this.tableroModelo.crearTableroVacio();
       estadoJuegoServicio.guardarTablero(tablero);
 
-      historialJugadasServicio.agregarEvento({
-        tipo: 'crear-tablero',
-        fila: null,
-        columna: null,
-        detalle: `Se creó un tablero 10x10 con ${totalMinas} minas`,
-        minasAlrededor: null,
-        probabilidadMina: null,
-        recomendacion: null
-      });
+      // La IA escoge su primera jugada automáticamente
+      const primeraJugada = this.iaBuscaminasServicio.obtenerSiguienteJugada(tablero);
+      estadoJuegoServicio.guardarTablero(tablero);
 
       res.status(201).json({
-        mensaje: 'Tablero creado correctamente',
+        mensaje: 'Tablero creado. La IA ya escogió su primera casilla.',
+        jugada: primeraJugada,
         tablero
       });
     } catch (error) {
       res.status(500).json({
-        mensaje: 'Ocurrió un error al crear el tablero',
+        mensaje: 'Error al crear el tablero',
         error: error instanceof Error ? error.message : 'Error desconocido'
       });
     }
   };
 
-  public registrarJugada = (req: Request, res: Response): void => {
-    try {
-      const { fila, columna, minasAlrededor } = req.body;
+  // ─────────────────────────────────────────────────────────────────────────
+  // 2. REGISTRAR RESULTADO Y OBTENER SIGUIENTE JUGADA
+  // ─────────────────────────────────────────────────────────────────────────
 
-      if (!estadoJuegoServicio.existeTablero()) {
-        res.status(400).json({
-          mensaje: 'Primero debes crear un tablero'
-        });
-        return;
-      }
-
-      if (
-        typeof fila !== 'number' ||
-        typeof columna !== 'number' ||
-        typeof minasAlrededor !== 'number'
-      ) {
-        res.status(400).json({
-          mensaje: 'Debes enviar fila, columna y minasAlrededor válidos'
-        });
-        return;
-      }
-
-      const tablero = estadoJuegoServicio.obtenerTablero();
-
-      if (!tablero) {
-        res.status(400).json({
-          mensaje: 'No se encontró el tablero actual'
-        });
-        return;
-      }
-
-      if (
-        fila < 0 ||
-        fila >= tablero.totalFilas ||
-        columna < 0 ||
-        columna >= tablero.totalColumnas
-      ) {
-        res.status(400).json({
-          mensaje: 'La fila o columna están fuera del rango del tablero'
-        });
-        return;
-      }
-
-      const casillaActual = tablero.matriz[fila][columna];
-
-      if (casillaActual.abierta) {
-        res.status(400).json({
-          mensaje: 'Esa casilla ya fue usada'
-        });
-        return;
-      }
-
-      // Lógica de la casilla [fila, columna]: el usuario registra una sola casilla abierta con el número de minas alrededor.
-      casillaActual.abierta = true;
-      casillaActual.minasAlrededor = minasAlrededor;
-      casillaActual.fueIntentada = true;
-      casillaActual.probabilidadMina = 0;
-      casillaActual.recomendacion = 0;
-
-      estadoJuegoServicio.guardarTablero(tablero);
-
-      historialJugadasServicio.agregarEvento({
-        tipo: 'jugada-usuario',
-        fila,
-        columna,
-        detalle: 'El usuario registró su jugada manual inicial o una jugada manual',
-        minasAlrededor,
-        probabilidadMina: 0,
-        recomendacion: 0
-      });
-
-      res.status(200).json({
-        mensaje: 'Jugada registrada correctamente',
-        casilla: casillaActual,
-        tablero
-      });
-    } catch (error) {
-      res.status(500).json({
-        mensaje: 'Ocurrió un error al registrar la jugada',
-        error: error instanceof Error ? error.message : 'Error desconocido'
-      });
-    }
-  };
-
-  public obtenerSiguienteJugada = (req: Request, res: Response): void => {
-    try {
-      if (!estadoJuegoServicio.existeTablero()) {
-        res.status(400).json({
-          mensaje: 'Primero debes crear un tablero'
-        });
-        return;
-      }
-
-      const tablero = estadoJuegoServicio.obtenerTablero();
-
-      if (!tablero) {
-        res.status(400).json({
-          mensaje: 'No se encontró el tablero actual'
-        });
-        return;
-      }
-
-      const jugada = this.iaBuscaminasServicio.obtenerSiguienteJugada(tablero);
-      estadoJuegoServicio.guardarTablero(tablero);
-
-      historialJugadasServicio.agregarEvento({
-        tipo: 'jugada-ia',
-        fila: jugada.fila,
-        columna: jugada.columna,
-        detalle: jugada.motivo,
-        minasAlrededor: null,
-        probabilidadMina: jugada.probabilidadMina,
-        recomendacion: jugada.recomendacion
-      });
-
-      res.status(200).json({
-        mensaje: 'Siguiente jugada calculada correctamente',
-        jugada,
-        tablero
-      });
-    } catch (error) {
-      res.status(500).json({
-        mensaje: 'Ocurrió un error al calcular la siguiente jugada',
-        error: error instanceof Error ? error.message : 'Error desconocido'
-      });
-    }
-  };
-
+  /**
+   * POST /api/resultado
+   * El usuario informa cuántas minas hay alrededor de la casilla levantada.
+   * El backend abre esa casilla, actualiza el tablero, y devuelve la siguiente jugada de la IA.
+   *
+   * Body: { fila: number, columna: number, minasAlrededor: number }
+   *
+   * Respuesta: la siguiente jugada que la IA recomienda levantar.
+   */
   public registrarResultado = (req: Request, res: Response): void => {
     try {
+      if (!estadoJuegoServicio.existeTablero()) {
+        res.status(400).json({ mensaje: 'Primero debes crear un tablero' });
+        return;
+      }
+
+      if (estadoJuegoServicio.estaJuegoPerdido()) {
+        res.status(400).json({ mensaje: 'El juego ya fue perdido. Reinicia para continuar.' });
+        return;
+      }
+
       const { fila, columna, minasAlrededor } = req.body;
 
-      if (!estadoJuegoServicio.existeTablero()) {
-        res.status(400).json({
-          mensaje: 'Primero debes crear un tablero'
-        });
+      if (typeof fila !== 'number' || typeof columna !== 'number' || typeof minasAlrededor !== 'number') {
+        res.status(400).json({ mensaje: 'Debes enviar fila, columna y minasAlrededor como números' });
         return;
       }
 
-      if (
-        typeof fila !== 'number' ||
-        typeof columna !== 'number' ||
-        typeof minasAlrededor !== 'number'
-      ) {
-        res.status(400).json({
-          mensaje: 'Debes enviar fila, columna y minasAlrededor válidos'
-        });
+      if (fila < 0 || fila >= 10 || columna < 0 || columna >= 10) {
+        res.status(400).json({ mensaje: 'Fila o columna fuera del rango 0-9' });
         return;
       }
 
-      const tablero = estadoJuegoServicio.obtenerTablero();
-
-      if (!tablero) {
-        res.status(400).json({
-          mensaje: 'No se encontró el tablero actual'
-        });
+      if (minasAlrededor < 0 || minasAlrededor > 8) {
+        res.status(400).json({ mensaje: 'minasAlrededor debe estar entre 0 y 8' });
         return;
       }
 
-      if (
-        fila < 0 ||
-        fila >= tablero.totalFilas ||
-        columna < 0 ||
-        columna >= tablero.totalColumnas
-      ) {
-        res.status(400).json({
-          mensaje: 'La fila o columna están fuera del rango del tablero'
-        });
+      const tablero = estadoJuegoServicio.obtenerTablero()!;
+      const casilla = tablero.matriz[fila][columna];
+
+      if (casilla.abierta) {
+        res.status(400).json({ mensaje: 'Esa casilla ya fue abierta anteriormente' });
         return;
       }
 
-      const casillaActual = tablero.matriz[fila][columna];
-
-      if (casillaActual.abierta) {
-        res.status(400).json({
-          mensaje: 'Esa casilla ya fue abierta anteriormente'
-        });
-        return;
-      }
-
-      // Lógica de la casilla [fila, columna]: se registra el resultado de la casilla recomendada por la IA y se abre esa única casilla.
-      casillaActual.abierta = true;
-      casillaActual.minasAlrededor = minasAlrededor;
-      casillaActual.fueIntentada = true;
-      casillaActual.probabilidadMina = 0;
-      casillaActual.recomendacion = 0;
+      // Registrar la información que el usuario informó sobre esta casilla
+      casilla.abierta = true;
+      casilla.minasAlrededor = minasAlrededor;
+      casilla.fueIntentada = true;
+      casilla.probabilidadMina = 0;
+      casilla.recomendacion = 0;
 
       estadoJuegoServicio.guardarTablero(tablero);
 
-      historialJugadasServicio.agregarEvento({
-        tipo: 'resultado-ia',
-        fila,
-        columna,
-        detalle: 'Se registró el resultado de la casilla recomendada por la IA',
-        minasAlrededor,
-        probabilidadMina: 0,
-        recomendacion: 0
-      });
+      // Con la nueva información, la IA calcula su siguiente jugada
+      const siguienteJugada = this.iaBuscaminasServicio.obtenerSiguienteJugada(tablero);
+      estadoJuegoServicio.guardarTablero(tablero);
 
       res.status(200).json({
-        mensaje: 'Resultado de la IA registrado correctamente',
-        casilla: casillaActual,
+        mensaje: 'Resultado registrado. La IA ya escogió la siguiente casilla.',
+        casillaAbierta: { fila, columna, minasAlrededor },
+        jugada: siguienteJugada,
         tablero
       });
     } catch (error) {
       res.status(500).json({
-        mensaje: 'Ocurrió un error al registrar el resultado',
+        mensaje: 'Error al registrar el resultado',
         error: error instanceof Error ? error.message : 'Error desconocido'
       });
     }
   };
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // 3. REGISTRAR MINA — JUEGO PERDIDO
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * POST /api/mina
+   * El usuario informa que la casilla levantada era una mina.
+   * El juego se pierde inmediatamente, sin importar si la lógica decía que era segura.
+   * No se guarda memoria: al reiniciar la IA empieza desde cero.
+   *
+   * Body: { fila: number, columna: number }
+   */
+  public registrarMina = (req: Request, res: Response): void => {
+    try {
+      if (!estadoJuegoServicio.existeTablero()) {
+        res.status(400).json({ mensaje: 'Primero debes crear un tablero' });
+        return;
+      }
+
+      if (estadoJuegoServicio.estaJuegoPerdido()) {
+        res.status(400).json({ mensaje: 'El juego ya estaba perdido. Reinicia para continuar.' });
+        return;
+      }
+
+      const { fila, columna } = req.body;
+
+      if (typeof fila !== 'number' || typeof columna !== 'number') {
+        res.status(400).json({ mensaje: 'Debes enviar fila y columna como números' });
+        return;
+      }
+
+      if (fila < 0 || fila >= 10 || columna < 0 || columna >= 10) {
+        res.status(400).json({ mensaje: 'Fila o columna fuera del rango 0-9' });
+        return;
+      }
+
+      // Marcar el juego como perdido
+      estadoJuegoServicio.marcarJuegoPerdido();
+
+      res.status(200).json({
+        mensaje: `Mina en [${fila}, ${columna}]. Juego perdido. Reinicia para una nueva partida.`,
+        juegoPerdido: true,
+        posicionMina: { fila, columna }
+      });
+    } catch (error) {
+      res.status(500).json({
+        mensaje: 'Error al registrar la mina',
+        error: error instanceof Error ? error.message : 'Error desconocido'
+      });
+    }
+  };
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // 4. REINICIAR
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * POST /api/reiniciar
+   * Limpia el tablero y el estado de derrota.
+   * Recrea la instancia de la IA para garantizar que empiece desde cero sin ninguna memoria.
+   */
   public reiniciarTablero = (req: Request, res: Response): void => {
     try {
       estadoJuegoServicio.limpiarTablero();
 
-      historialJugadasServicio.agregarEvento({
-        tipo: 'reinicio-tablero',
-        fila: null,
-        columna: null,
-        detalle: 'Se reinició el tablero actual',
-        minasAlrededor: null,
-        probabilidadMina: null,
-        recomendacion: null
-      });
+      // Recrear la IA desde cero — sin memoria de partidas anteriores
+      this.iaBuscaminasServicio = new IABuscaminasServicio();
 
       res.status(200).json({
-        mensaje: 'Tablero reiniciado correctamente'
+        mensaje: 'Tablero reiniciado. Crea un nuevo tablero para empezar.'
       });
     } catch (error) {
       res.status(500).json({
-        mensaje: 'Ocurrió un error al reiniciar el tablero',
+        mensaje: 'Error al reiniciar el tablero',
         error: error instanceof Error ? error.message : 'Error desconocido'
       });
     }
   };
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // VER TABLERO
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * GET /api/tablero
+   * Devuelve el estado actual del tablero.
+   * Útil para que el frontend sincronice su vista si algo falla.
+   */
   public verTablero = (req: Request, res: Response): void => {
     try {
       if (!estadoJuegoServicio.existeTablero()) {
-        res.status(400).json({
-          mensaje: 'Primero debes crear un tablero'
-        });
-        return;
-      }
-
-      const tablero = estadoJuegoServicio.obtenerTablero();
-
-      if (!tablero) {
-        res.status(400).json({
-          mensaje: 'No se encontró el tablero actual'
-        });
+        res.status(400).json({ mensaje: 'No hay tablero activo. Crea uno primero.' });
         return;
       }
 
       res.status(200).json({
         mensaje: 'Tablero obtenido correctamente',
-        tablero
+        juegoPerdido: estadoJuegoServicio.estaJuegoPerdido(),
+        tablero: estadoJuegoServicio.obtenerTablero()
       });
     } catch (error) {
       res.status(500).json({
-        mensaje: 'Ocurrió un error al obtener el tablero',
-        error: error instanceof Error ? error.message : 'Error desconocido'
-      });
-    }
-  };
-
-  public verTableroTexto = (req: Request, res: Response): void => {
-    try {
-      if (!estadoJuegoServicio.existeTablero()) {
-        res.status(400).json({
-          mensaje: 'Primero debes crear un tablero'
-        });
-        return;
-      }
-
-      const tablero = estadoJuegoServicio.obtenerTablero();
-
-      if (!tablero) {
-        res.status(400).json({
-          mensaje: 'No se encontró el tablero actual'
-        });
-        return;
-      }
-
-      const tableroTexto = TableroUtilidad.convertirATexto(tablero);
-
-      res.status(200).json({
-        mensaje: 'Tablero en texto obtenido correctamente',
-        tableroTexto
-      });
-    } catch (error) {
-      res.status(500).json({
-        mensaje: 'Ocurrió un error al obtener el tablero en texto',
-        error: error instanceof Error ? error.message : 'Error desconocido'
-      });
-    }
-  };
-
-  public verProbabilidades = (req: Request, res: Response): void => {
-    try {
-      if (!estadoJuegoServicio.existeTablero()) {
-        res.status(400).json({
-          mensaje: 'Primero debes crear un tablero'
-        });
-        return;
-      }
-
-      const tablero = estadoJuegoServicio.obtenerTablero();
-
-      if (!tablero) {
-        res.status(400).json({
-          mensaje: 'No se encontró el tablero actual'
-        });
-        return;
-      }
-
-      const tableroProbabilidades = TableroUtilidad.convertirAProbabilidades(tablero);
-
-      res.status(200).json({
-        mensaje: 'Probabilidades obtenidas correctamente',
-        tableroProbabilidades,
-        tablero
-      });
-    } catch (error) {
-      res.status(500).json({
-        mensaje: 'Ocurrió un error al obtener las probabilidades',
-        error: error instanceof Error ? error.message : 'Error desconocido'
-      });
-    }
-  };
-
-  public verHistorial = (req: Request, res: Response): void => {
-    try {
-      const historial = historialJugadasServicio.obtenerHistorial();
-
-      res.status(200).json({
-        mensaje: 'Historial obtenido correctamente',
-        totalEventos: historial.length,
-        historial
-      });
-    } catch (error) {
-      res.status(500).json({
-        mensaje: 'Ocurrió un error al obtener el historial',
-        error: error instanceof Error ? error.message : 'Error desconocido'
-      });
-    }
-  };
-
-  public limpiarHistorial = (req: Request, res: Response): void => {
-    try {
-      historialJugadasServicio.limpiarHistorial();
-
-      res.status(200).json({
-        mensaje: 'Historial limpiado correctamente'
-      });
-    } catch (error) {
-      res.status(500).json({
-        mensaje: 'Ocurrió un error al limpiar el historial',
+        mensaje: 'Error al obtener el tablero',
         error: error instanceof Error ? error.message : 'Error desconocido'
       });
     }
